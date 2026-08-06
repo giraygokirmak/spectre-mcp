@@ -13,10 +13,12 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick Start</a> · <a href="docs/tools.md">Tools</a> · <a href="#why-spectre">Why Spectre?</a> · <a href="#safety-guide">Safety</a> · <a href="docs/integrations.md">Integrations</a> · <a href="docs/reference.md">Reference</a>
+  <a href="#quick-start">Quick Start</a> · <a href="docs/tools.md">Tools</a> · <a href="#why-spectre">Why Spectre?</a> · <a href="docs/safety.md">Safety</a> · <a href="docs/integrations.md">Integrations</a> · <a href="docs/reference.md">Reference</a>
 </p>
 
 ---
+
+<a id="why-spectre"></a>
 
 <p align="center">
   <img src="assets/headers/why.svg" alt="Why Spectre?" />
@@ -44,6 +46,8 @@ Spectre is an MCP server that gives AI agents 104 tools for X/Twitter automation
 | **Language** | Python | JavaScript | Python |
 
 ---
+
+<a id="quick-start"></a>
 
 <p align="center">
   <img src="assets/headers/quickstart.svg" alt="Quick Start" />
@@ -95,43 +99,12 @@ For client-specific setup (Hermes skill, Claude, Cursor, Python), see [Integrati
 ---
 
 <p align="center">
-  <img src="assets/headers/safety.svg" alt="Safety Guide" />
-</p>
-
-Spectre marks every destructive tool in the [tools reference](docs/tools.md) with a `—`. Agents should respect these warnings.
-
-### Always Confirm Before Calling
-
-| Tool | Why |
-|------|-----|
-| `post_tweet` | Public, live immediately |
-| `delete_tweet` | Permanent |
-| `pin_tweet` | Replaces existing pin silently |
-| `update_profile*` | Changes your public profile |
-| `follow_user` / `unfollow_user` | Visible to the other user |
-| `block_user` | Blocked user loses access to your content |
-| `send_dm` | Sent immediately, no recall |
-| `create_highlight` | Adds to your public profile |
-
-### Safe to Use Freely (Read-Only)
-
-All `get_*`, `search_*`, `list_*` tools. `pool_status`, `get_muted_accounts`, `get_blocked_accounts`, `get_scheduled_tweets`, `get_drafts`, `get_bookmarks`, `get_trends`, `get_home_timeline`, `get_notifications`.
-
-### Rate Limits
-
-- ~300 requests/hour/account
-- Spectre auto-rotates to the next account on rate limits
-- Use `set_auto_rotate(false)` to lock to a single account
-- Rate limit errors include `retry_after_seconds`
-
----
-
-<p align="center">
   <img src="assets/headers/reference.svg" alt="Reference" />
 </p>
 
 - [All 104 Tools](docs/tools.md) — every tool, grouped by feature
 - [Integrations](docs/integrations.md) — Hermes, Claude, Cursor, Python
+- [Safety](docs/safety.md) — destructive tools, rate limits
 - [Reference](docs/reference.md) — X query operators, CLI, env vars, limitations
 
 ---
