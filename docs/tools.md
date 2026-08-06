@@ -1,6 +1,8 @@
-<h1 align="center">Tools</h1>
+<p align="center">
+  <img src="../assets/headers/tools.svg" alt="Tools" />
+</p>
 
-All 104 tools, grouped by feature. Tools marked `—` are destructive — see the [Safety Guide](../README.md#safety-guide).
+All 104 tools, grouped by feature. Tools marked `—` are destructive — see the [Safety Guide](safety.md).
 
 ### Account Pool (5)
 

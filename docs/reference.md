@@ -1,4 +1,6 @@
-<h1 align="center">Reference</h1>
+<p align="center">
+  <img src="../assets/headers/reference.svg" alt="Reference" />
+</p>
 
 ## X Query Operators
 

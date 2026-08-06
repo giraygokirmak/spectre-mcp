@@ -1,4 +1,6 @@
-<h1 align="center">Safety</h1>
+<p align="center">
+  <img src="../assets/headers/safety.svg" alt="Safety" />
+</p>
 
 Spectre marks every destructive tool in the [tools reference](tools.md) with a `—`. Agents should respect these warnings.
 

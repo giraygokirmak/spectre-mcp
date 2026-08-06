@@ -1,4 +1,6 @@
-<h1 align="center">Integrations</h1>
+<p align="center">
+  <img src="../assets/headers/integrations.svg" alt="Integrations" />
+</p>
 
 Spectre works with any client that supports the [Model Context Protocol](https://modelcontextprotocol.io). The server command is always `uvx spectre-mcp`.
 
