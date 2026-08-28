@@ -252,8 +252,9 @@ class Writer:
     async def _get_session(self, preferred: Optional[str] = None) -> tuple[httpx.AsyncClient, dict]:
         """Get an authenticated HTTP client from the pool.
 
-        Args:
-            preferred: Username to prefer. Falls back to self._preferred_account, then first active.
+        Returns (client, account_info) where account_info carries the username
+        AND the parsed cookies dict, so callers (e.g. transaction-id generation)
+        can authenticate secondary X web fetches with the same session.
         """
         accounts = await self.pool.get_all()
         if not accounts:
@@ -321,7 +322,7 @@ class Writer:
             proxy=proxy_url,
             timeout=30,
         )
-        return client, {"username": acc.username}
+        return client, {"username": acc.username, "cookies": cookies}
 
     async def _post(self, operation: str, variables: dict, features: dict | None = None, field_toggles: dict | None = None) -> dict:
         """Make an authenticated POST to X's GraphQL API."""
@@ -337,14 +338,31 @@ class Writer:
 
         client, acc_info = await self._get_session()
         try:
-            # Generate x-client-transaction-id
-            try:
-                from twscrape.queue_client import XClIdGenStore
-                gen = await XClIdGenStore.get(acc_info["username"])
-                txn_id = gen.calc("POST", path)
-                client.headers["x-client-transaction-id"] = txn_id
-            except Exception as e:
-                logger.warning(f"Could not generate x-client-transaction-id: {e}")
+            # Generate x-client-transaction-id. The generator must fetch X's web
+            # assets with the account's cookies; otherwise X serves the logged-out
+            # Vite build, whose signing script can't be parsed ("Logged-out X web
+            # app"), and twscrape's account-scoped cache then wedges that failure
+            # for the whole process lifetime. Retry once with fresh=True so a
+            # poisoned cache entry is invalidated.
+            gen = None
+            from twscrape.queue_client import XClIdGenStore
+            for fresh in (False, True):
+                try:
+                    gen = await XClIdGenStore.get(
+                        acc_info["username"], cookies=acc_info["cookies"], fresh=fresh
+                    )
+                    client.headers["x-client-transaction-id"] = gen.calc("POST", path)
+                    break
+                except Exception as e:
+                    logger.warning(
+                        f"Could not generate x-client-transaction-id"
+                        f"{' (fresh retry)' if fresh else ''}: {e}"
+                    )
+            if gen is None:
+                # Continue without the header; X intermittently accepts unsigned
+                # mutations, but treat an empty-200 reply as a retryable failure
+                # in create_draft so callers see a real draft_id or an error.
+                pass
 
             resp = await client.post(url, json=body)
 
@@ -390,14 +408,23 @@ class Writer:
 
         client, acc_info = await self._get_session()
         try:
-            # Generate x-client-transaction-id (same as _post)
-            try:
-                from twscrape.queue_client import XClIdGenStore
-                gen = await XClIdGenStore.get(acc_info["username"])
-                txn_id = gen.calc("GET", path)
-                client.headers["x-client-transaction-id"] = txn_id
-            except Exception as e:
-                logger.warning(f"Could not generate x-client-transaction-id: {e}")
+            # Generate x-client-transaction-id — pass the account cookies (X
+            # serves a different web build to anonymous sessions) and retry once
+            # with fresh=True to recover from a wedged twscrape cache entry.
+            gen = None
+            from twscrape.queue_client import XClIdGenStore
+            for fresh in (False, True):
+                try:
+                    gen = await XClIdGenStore.get(
+                        acc_info["username"], cookies=acc_info["cookies"], fresh=fresh
+                    )
+                    client.headers["x-client-transaction-id"] = gen.calc("GET", path)
+                    break
+                except Exception as e:
+                    logger.warning(
+                        f"Could not generate x-client-transaction-id"
+                        f"{' (fresh retry)' if fresh else ''}: {e}"
+                    )
 
             resp = await client.get(url, params=params)
 
@@ -903,33 +930,48 @@ class Writer:
     # ── Draft Tweets ──
 
     async def create_draft(self, text: str) -> dict:
-        """Save a tweet draft."""
+        """Save a tweet draft.
+
+        X's GraphQL mutation may succeed without returning the created draft's
+        `rest_id` — typically when the `x-client-transaction-id` header was
+        generated from a wedged twscrape cache (see _get_session fix). In that
+        case retry once with a fresh generator before reporting failure.
+        """
         variables = {"post_tweet_request": {"status": text, "media_ids": []}}
-        data = await self._post("CreateDraftTweet", variables)
-        if "error" in data:
-            return data
-        # Try multiple response paths
-        draft_id = (
-            data.get("data", {}).get("create_draft_tweet", {}).get("draft_tweet", {}).get("id")
-            or data.get("data", {}).get("create_draft_tweet", {}).get("rest_id")
-        )
-        if not draft_id:
-            # Deep search for rest_id
-            def _find_rest_id(obj, depth=0):
-                if depth > 5: return None
-                if isinstance(obj, dict):
-                    if "rest_id" in obj and obj.get("__typename") in ("DraftTweet", "Tweet", None):
-                        return obj["rest_id"]
-                    for v in obj.values():
-                        r = _find_rest_id(v, depth + 1)
-                        if r: return r
-                elif isinstance(obj, list):
-                    for item in obj:
-                        r = _find_rest_id(item, depth + 1)
-                        if r: return r
-                return None
-            draft_id = _find_rest_id(data)
-        return {"status": "draft_created", "draft_id": draft_id}
+        for attempt in (False, True):
+            data = await self._post("CreateDraftTweet", variables)
+            if "error" in data:
+                return data
+            # Try multiple response paths
+            draft_id = (
+                data.get("data", {}).get("create_draft_tweet", {}).get("draft_tweet", {}).get("id")
+                or data.get("data", {}).get("create_draft_tweet", {}).get("rest_id")
+            )
+            if not draft_id:
+                # Deep search for rest_id
+                def _find_rest_id(obj, depth=0):
+                    if depth > 5: return None
+                    if isinstance(obj, dict):
+                        if "rest_id" in obj and obj.get("__typename") in ("DraftTweet", "Tweet", None):
+                            return obj["rest_id"]
+                        for v in obj.values():
+                            r = _find_rest_id(v, depth + 1)
+                            if r: return r
+                    elif isinstance(obj, list):
+                        for item in obj:
+                            r = _find_rest_id(item, depth + 1)
+                            if r: return r
+                    return None
+                draft_id = _find_rest_id(data)
+            if draft_id:
+                return {"status": "draft_created", "draft_id": draft_id}
+            if attempt:
+                break
+            logger.warning(
+                "CreateDraftTweet returned 200 but empty response; retrying with "
+                "refreshed transaction-id state"
+            )
+        return {"status": "draft_created", "draft_id": None}
 
     async def get_drafts(self) -> dict:
         """Get all draft tweets."""
@@ -1282,13 +1324,20 @@ class Writer:
             client.headers["content-type"] = "application/x-www-form-urlencoded"
             # Generate x-client-transaction-id (required for update_profile since late 2024)
             path = "/i/api/1.1/account/update_profile.json"
-            try:
-                from twscrape.queue_client import XClIdGenStore
-                gen = await XClIdGenStore.get(acc_info["username"])
-                txn_id = gen.calc("POST", path)
-                client.headers["x-client-transaction-id"] = txn_id
-            except Exception as e:
-                logger.warning(f"Could not generate x-client-transaction-id: {e}")
+            gen = None
+            from twscrape.queue_client import XClIdGenStore
+            for fresh in (False, True):
+                try:
+                    gen = await XClIdGenStore.get(
+                        acc_info["username"], cookies=acc_info["cookies"], fresh=fresh
+                    )
+                    client.headers["x-client-transaction-id"] = gen.calc("POST", path)
+                    break
+                except Exception as e:
+                    logger.warning(
+                        f"Could not generate x-client-transaction-id"
+                        f"{' (fresh retry)' if fresh else ''}: {e}"
+                    )
             urls = [
                 "https://api.x.com/1.1/account/update_profile.json",
                 "https://x.com/i/api/1.1/account/update_profile.json",
