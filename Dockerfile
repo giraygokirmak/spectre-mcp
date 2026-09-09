@@ -18,15 +18,16 @@ RUN pip install --no-cache-dir --upgrade pip \
 # HTTP entrypoint + seed scripti
 COPY docker/http_server.py /app/http_server.py
 COPY docker/entrypoint.sh /app/entrypoint.sh
+COPY docker/healthcheck.py /app/healthcheck.py
 RUN chmod +x /app/entrypoint.sh \
     && mkdir -p /data
 
 # Hesap havuzu DB'si volume olarak disari alinir (token'lar image'da kalmaz)
 VOLUME ["/data"]
 
-EXPOSE 7001
-
+# Port hardcode degil: healthcheck.py SPECTRE_HTTP_PORT env'ini runtime'da okur.
+# .env'de port degisirse rebuild gerekmeksizin 'docker compose up -d' yeterli.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD python -c "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:7001/mcp',timeout=4).status in (200,405,406) else 1)"
+    CMD python /app/healthcheck.py
 
 ENTRYPOINT ["/app/entrypoint.sh"]

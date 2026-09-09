@@ -162,17 +162,25 @@ async def pool_status() -> str:
 # ══════════════════════════════════════════
 
 @mcp.tool()
-async def search(query: str, limit: int = 20, mode: str = "latest") -> str:
+async def search(
+    query: str,
+    limit: int = 20,
+    mode: str = "latest",
+    count: int | None = None,   # OpenClaw gibi istemciler 'count' gönderiyor; alias olarak kabul et
+) -> str:
     """Search X/Twitter for tweets matching a query.
 
     Args:
         query: Search query. Supports X operators like "from:username", "since:2026-01-01", "#hashtag", "filter:media", "lang:en".
         limit: Max tweets to return (default 20, max 100).
         mode: Search mode — "latest" (chronological), "top" (relevance), or "media" (photos/videos only).
+        count: Alias for limit — used by some MCP clients (e.g. OpenClaw).
 
     Returns:
         JSON array of matching tweets with text, author, metrics, media URLs, etc.
     """
+    if count is not None:
+        limit = count
     limit = min(limit, 100)
     scraper = _get_scraper()
     results = await scraper.search(query, limit=limit, mode=mode)
@@ -919,38 +927,70 @@ async def delete_scheduled_tweet(tweet_id: str) -> str:
 # ══════════════════════════════════════════
 
 @mcp.tool()
-async def create_draft(text: str, media_path: str = "") -> str:
-    """Save a tweet draft (not published).
+async def create_draft(
+    text: str,
+    media_path: str = "",
+    media_b64: str = "",
+    media_filename: str = "media",
+) -> str:
+    """Save a tweet draft (not published), optionally with ONE media attachment.
+
+    HOW TO ATTACH MEDIA — read carefully:
+    • media_b64 (REQUIRED for remote MCP clients): base64-encoded content of
+      the file. If the file lives on YOUR (the client's) machine, you MUST
+      first read it with a client-side/local tool, base64-encode the bytes,
+      and pass the string here. Set media_filename to the real name so the
+      extension drives MIME detection (e.g. "chart.png", "clip.mp4").
+    • media_path (server-local only): an absolute path readable FROM THE
+      SPECTRE SERVER's filesystem. If Spectre runs in a remote container,
+      your local paths (e.g. /Users/..., C:\\...) do NOT exist there — the
+      call will fail with a hint instead of creating a media-less draft.
 
     Args:
         text: Draft content.
-        media_path: Optional absolute path to ONE image file (jpg/png/gif/webp)
-            to attach to the draft. The file is uploaded to X first
-            (upload_media), then the draft is created with that media attached.
-            Empty string = plain text draft (previous behavior).
+        media_path: Absolute path to ONE media file, readable by the server itself.
+        media_b64: Base64 string of the file content (no "data:...;base64," prefix).
+        media_filename: Original filename with extension (used for MIME type).
 
     Returns:
-        JSON with draft confirmation; `media_ids` echoes the attached media
-        when media_path was given, `media_error` carries an upload failure
-        detail if the draft was created without the media.
+        JSON with draft confirmation; `media_ids` is echoed when media attached.
+        On failure returns {"error": ..., "hint": ...} and creates NO draft.
     """
+    import base64
+    import binascii
+    import os
+
     writer = _get_writer()
     media_ids: list[int] = []
-    media_err: str | None = None
-    if media_path:
+
+    if media_b64:
+        # — Remote-client path: content arrived over MCP —
         try:
-            up = await writer.upload_media(media_path)
-        except Exception as exc:  # noqa: BLE001 - keep draft path alive
-            media_err = f"upload exception: {exc}"
-        else:
-            mid = up.get("media_id") or up.get("media_id_string")
-            if mid:
-                media_ids = [int(mid)]
-            else:
-                media_err = f"upload returned no media_id: {str(up)[:200]}"
+            raw = base64.b64decode(media_b64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            return json.dumps({"error": f"media_b64 is not valid base64: {exc}"})
+        if not raw:
+            return json.dumps({"error": "media_b64 decoded to 0 bytes"})
+        up = await writer.upload_media_bytes(raw, filename=media_filename)
+        if "error" in up:
+            return json.dumps({"error": "media upload failed — draft NOT created", "detail": up})
+        mid = up.get("media_id") or up.get("media_id_string")
+        media_ids = [int(mid)]
+
+    elif media_path:
+        # — Server-local path: only valid when client & server share a filesystem —
+        if not os.path.exists(media_path):
+            return json.dumps({
+                "error": f"File not found on server: {media_path}",
+                "hint": "This Spectre server runs in a remote container and cannot read the CLIENT's local filesystem. Do NOT retry the same path and do NOT create the draft without media. Instead: read the file with a client-side tool (e.g. the local file/read tool), base64-encode it, and call create_draft again with media_b64=<content> and media_filename=<name.ext>.",
+            })
+        up = await writer.upload_media(media_path)
+        if "error" in up:
+            return json.dumps({"error": "media upload failed — draft NOT created", "detail": up})
+        mid = up.get("media_id") or up.get("media_id_string")
+        media_ids = [int(mid)]
+
     result = await writer.create_draft(text, media_ids=media_ids or None)
-    if media_err:
-        result["media_error"] = media_err
     return json.dumps(result, indent=2)
 
 

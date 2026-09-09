@@ -2111,11 +2111,11 @@ class Writer:
     # ── Media Upload ──
 
     async def upload_media(self, file_path: str) -> dict:
-        """Upload media (image/video/GIF) for use in tweets.
+        """Upload media from a file path readable by THIS server's filesystem.
 
-        Uses cookie-based auth with curl_cffi for TLS fingerprinting.
-        3-phase upload: INIT → APPEND (4MB chunks) → FINALIZE.
-        For videos, polls processing status until complete.
+        Thin wrapper kept for backwards compatibility (local/stdio setups and
+        server-side callers): reads the file and delegates to upload_media_bytes().
+        Remote MCP clients must use media_b64 instead of filesystem paths.
         """
         import mimetypes
         import os
@@ -2124,7 +2124,27 @@ class Writer:
             return {"error": f"File not found: {file_path}"}
 
         content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
-        file_size = os.path.getsize(file_path)
+        with open(file_path, "rb") as f:
+            data = f.read()
+        return await self.upload_media_bytes(
+            data, filename=os.path.basename(file_path), content_type=content_type
+        )
+
+    async def upload_media_bytes(self, data: bytes, filename: str = "media", content_type: str | None = None) -> dict:
+        """Upload media (image/video/GIF) given RAW BYTES — the remote-MCP friendly path.
+
+        Uses cookie-based auth with curl_cffi for TLS fingerprinting.
+        3-phase upload: INIT → APPEND (4MB chunks) → FINALIZE.
+        For videos, polls processing status until complete.
+        """
+        import mimetypes
+
+        if not data:
+            return {"error": "Empty media payload"}
+
+        if not content_type:
+            content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        file_size = len(data)
 
         # Use upload2.json for videos, upload.json for images
         is_video = content_type.startswith("video/")
@@ -2171,7 +2191,6 @@ class Writer:
                 "total_bytes": str(file_size),
                 "media_type": content_type,
             }
-            # For videos, add media_category for proper processing
             if is_video:
                 init_data["media_category"] = "tweet_video"
 
@@ -2189,34 +2208,32 @@ class Writer:
                 await session.close()
                 return {"error": "INIT response missing media_id_string", "raw": init_resp.text[:300]}
 
-            # ── Phase 2: APPEND (chunked upload) ──
+            # ── Phase 2: APPEND (chunked upload from memory) ──
             CHUNK_SIZE = 4 * 1024 * 1024  # 4MB chunks
-            with open(file_path, "rb") as f:
-                segment = 0
-                while chunk := f.read(CHUNK_SIZE):
-                    append_data = {
-                        "command": "APPEND",
-                        "media_id": media_id,
-                        "segment_index": str(segment),
-                    }
-                    mp = curl_cffi.CurlMime()
-                    mp.addpart(
-                        name="media",
-                        content_type=content_type,
-                        filename=os.path.basename(file_path),
-                        data=chunk,
-                    )
-                    append_resp = await session.post(
-                        upload_url,
-                        data=append_data,
-                        multipart=mp,
-                        headers=base_headers,
-                    )
-                    mp.close()
-                    if append_resp.status_code not in (200, 204):
-                        await session.close()
-                        return {"error": f"APPEND segment {segment} failed (HTTP {append_resp.status_code})", "detail": append_resp.text[:300]}
-                    segment += 1
+            for segment, offset in enumerate(range(0, file_size, CHUNK_SIZE)):
+                chunk = data[offset:offset + CHUNK_SIZE]
+                append_data = {
+                    "command": "APPEND",
+                    "media_id": media_id,
+                    "segment_index": str(segment),
+                }
+                mp = curl_cffi.CurlMime()
+                mp.addpart(
+                    name="media",
+                    content_type=content_type,
+                    filename=filename,
+                    data=chunk,
+                )
+                append_resp = await session.post(
+                    upload_url,
+                    data=append_data,
+                    multipart=mp,
+                    headers=base_headers,
+                )
+                mp.close()
+                if append_resp.status_code not in (200, 204):
+                    await session.close()
+                    return {"error": f"APPEND segment {segment} failed (HTTP {append_resp.status_code})", "detail": append_resp.text[:300]}
 
             # ── Phase 3: FINALIZE ──
             finalize_data = {
