@@ -929,15 +929,18 @@ class Writer:
 
     # ── Draft Tweets ──
 
-    async def create_draft(self, text: str) -> dict:
-        """Save a tweet draft.
+    async def create_draft(self, text: str, media_ids: list[int] | None = None) -> dict:
+        """Save a tweet draft, optionally with attached media.
 
-        X's GraphQL mutation may succeed without returning the created draft's
-        `rest_id` — typically when the `x-client-transaction-id` header was
-        generated from a wedged twscrape cache (see _get_session fix). In that
-        case retry once with a fresh generator before reporting failure.
+        Media must be uploaded first via upload_media() — pass the returned
+        string media IDs here. X's GraphQL mutation may succeed without
+        returning the created draft's `rest_id` — typically when the
+        `x-client-transaction-id` header was generated from a wedged twscrape
+        cache (see _get_session fix). In that case retry once with a fresh
+        generator before reporting failure.
         """
-        variables = {"post_tweet_request": {"status": text, "media_ids": []}}
+        ids = [str(mid) for mid in (media_ids or [])]
+        variables = {"post_tweet_request": {"status": text, "media_ids": ids}}
         for attempt in (False, True):
             data = await self._post("CreateDraftTweet", variables)
             if "error" in data:
@@ -964,7 +967,10 @@ class Writer:
                     return None
                 draft_id = _find_rest_id(data)
             if draft_id:
-                return {"status": "draft_created", "draft_id": draft_id}
+                out = {"status": "draft_created", "draft_id": draft_id}
+                if ids:
+                    out["media_ids"] = ids
+                return out
             if attempt:
                 break
             logger.warning(
@@ -997,9 +1003,12 @@ class Writer:
         data = await self._post("DeleteDraftTweet", {"draft_tweet_id": tweet_id})
         return {"status": "deleted", "draft_id": tweet_id}
 
-    async def edit_draft(self, draft_id: str, text: str) -> dict:
-        """Edit an existing draft tweet."""
-        variables = {"draft_tweet_id": draft_id, "post_tweet_request": {"status": text, "media_ids": []}}
+    async def edit_draft(self, draft_id: str, text: str, media_ids: list[int] | None = None) -> dict:
+        """Edit an existing draft tweet. Pass media_ids=None to keep current media."""
+        req: dict = {"status": text}
+        if media_ids is not None:
+            req["media_ids"] = [str(mid) for mid in media_ids]
+        variables = {"draft_tweet_id": draft_id, "post_tweet_request": req}
         data = await self._post("EditDraftTweet", variables)
         if "error" in data:
             return data

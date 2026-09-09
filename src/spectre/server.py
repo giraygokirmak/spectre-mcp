@@ -919,17 +919,38 @@ async def delete_scheduled_tweet(tweet_id: str) -> str:
 # ══════════════════════════════════════════
 
 @mcp.tool()
-async def create_draft(text: str) -> str:
+async def create_draft(text: str, media_path: str = "") -> str:
     """Save a tweet draft (not published).
 
     Args:
         text: Draft content.
+        media_path: Optional absolute path to ONE image file (jpg/png/gif/webp)
+            to attach to the draft. The file is uploaded to X first
+            (upload_media), then the draft is created with that media attached.
+            Empty string = plain text draft (previous behavior).
 
     Returns:
-        JSON with draft confirmation.
+        JSON with draft confirmation; `media_ids` echoes the attached media
+        when media_path was given, `media_error` carries an upload failure
+        detail if the draft was created without the media.
     """
     writer = _get_writer()
-    result = await writer.create_draft(text)
+    media_ids: list[int] = []
+    media_err: str | None = None
+    if media_path:
+        try:
+            up = await writer.upload_media(media_path)
+        except Exception as exc:  # noqa: BLE001 - keep draft path alive
+            media_err = f"upload exception: {exc}"
+        else:
+            mid = up.get("media_id") or up.get("media_id_string")
+            if mid:
+                media_ids = [int(mid)]
+            else:
+                media_err = f"upload returned no media_id: {str(up)[:200]}"
+    result = await writer.create_draft(text, media_ids=media_ids or None)
+    if media_err:
+        result["media_error"] = media_err
     return json.dumps(result, indent=2)
 
 

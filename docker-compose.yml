@@ -1,0 +1,23 @@
+services:
+  spectre-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: spectre-mcp:standalone
+    container_name: spectre-mcp
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # FastMCP streamable-http host/origin korumasini LAN icin verimli calistir
+      SPECTRE_HTTP_HOST: 0.0.0.0
+      SPECTRE_HTTP_PORT: "7001"
+    ports:
+      # Docker host'a expose: MCP endpoint http://<host>:7001/mcp
+      - "7001:7001"
+    volumes:
+      # Hesap havuzu (accounts.db) kalici; token'lar container yeniden build'de kaybolmaz
+      - spectre-data:/data
+
+volumes:
+  spectre-data:
