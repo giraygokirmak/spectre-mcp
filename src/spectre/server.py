@@ -1022,10 +1022,79 @@ async def delete_draft(tweet_id: str) -> str:
 
 
 @mcp.tool()
-async def edit_draft(draft_id: str, text: str) -> str:
-    """Edit an existing draft tweet."""
+async def edit_draft(
+    draft_id: str,
+    text: str,
+    media_path: str = "",
+    media_b64: str = "",
+    media_filename: str = "media",
+    clear_media: bool = False,
+) -> str:
+    """Edit an existing draft tweet (text and/or media).
+
+    MEDIA BEHAVIOUR — read carefully (observed on X side, 2026-09-18):
+    Editing a draft WITHOUT sending media_ids may drop the draft's existing
+    media on X's side (observed: get_drafts returned media_ids=[] right after
+    a text-only edit). Therefore:
+    • To KEEP the current media: your safest option is to re-upload the image
+      and pass it again via media_b64/media_path so the request carries the
+      new media_ids explicitly. Do not rely on omission preserving media.
+    • media_b64 / media_path given  -> media is uploaded and the draft's
+      media_ids are SET to the newly uploaded attachment.
+    • neither given, clear_media=False -> legacy behaviour (media_ids omitted
+      from the X request). X may keep OR drop the media — verify with
+      get_drafts after the call.
+    • clear_media=True -> the draft's media is explicitly removed
+      (media_ids=[] sent to X).
+
+    NOTE on remote clients: media_b64 is REQUIRED when the file lives on the
+    client machine — this server cannot read the client's filesystem.
+
+    Args:
+        draft_id: The draft tweet ID.
+        text: New draft content.
+        media_path: Absolute path to ONE media file readable by THIS server.
+        media_b64: Base64 string of file content (no data:... prefix).
+        media_filename: Original filename with extension (MIME detection).
+        clear_media: Set True to remove existing media without adding new.
+
+    Returns:
+        JSON {"status":"edited","draft_id":...} or {"error":..., "hint":...}.
+    """
+    import base64
+    import binascii
+    import os
+
     writer = _get_writer()
-    result = await writer.edit_draft(draft_id, text)
+    media_ids: list[int] | None = None
+
+    if media_b64:
+        try:
+            raw = base64.b64decode(media_b64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            return json.dumps({"error": f"media_b64 is not valid base64: {exc}"})
+        if not raw:
+            return json.dumps({"error": "media_b64 decoded to 0 bytes"})
+        up = await writer.upload_media_bytes(raw, filename=media_filename)
+        if "error" in up:
+            return json.dumps({"error": "media upload failed — draft NOT edited", "detail": up})
+        mid = up.get("media_id") or up.get("media_id_string")
+        media_ids = [int(mid)]
+    elif media_path:
+        if not os.path.exists(media_path):
+            return json.dumps({
+                "error": f"File not found on server: {media_path}",
+                "hint": "This Spectre server runs in a remote container and cannot read the CLIENT's local filesystem. Read the file with a client-side tool, base64-encode it and call edit_draft again with media_b64=<content>, media_filename=<name.ext>.",
+            })
+        up = await writer.upload_media(media_path)
+        if "error" in up:
+            return json.dumps({"error": "media upload failed — draft NOT edited", "detail": up})
+        mid = up.get("media_id") or up.get("media_id_string")
+        media_ids = [int(mid)]
+    elif clear_media:
+        media_ids = []
+
+    result = await writer.edit_draft(draft_id, text, media_ids=media_ids)
     return json.dumps(result, indent=2)
 
 
