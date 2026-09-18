@@ -1032,20 +1032,19 @@ async def edit_draft(
 ) -> str:
     """Edit an existing draft tweet (text and/or media).
 
-    MEDIA BEHAVIOUR — read carefully (observed on X side, 2026-09-18):
-    Editing a draft WITHOUT sending media_ids may drop the draft's existing
-    media on X's side (observed: get_drafts returned media_ids=[] right after
-    a text-only edit). Therefore:
-    • To KEEP the current media: your safest option is to re-upload the image
-      and pass it again via media_b64/media_path so the request carries the
-      new media_ids explicitly. Do not rely on omission preserving media.
+    MEDIA BEHAVIOUR (verified against live X, 2026-09-18):
+    X DROPS a draft's media whenever EditDraftTweet is sent without
+    media_ids. This tool compensates:
     • media_b64 / media_path given  -> media is uploaded and the draft's
       media_ids are SET to the newly uploaded attachment.
-    • neither given, clear_media=False -> legacy behaviour (media_ids omitted
-      from the X request). X may keep OR drop the media — verify with
-      get_drafts after the call.
-    • clear_media=True -> the draft's media is explicitly removed
-      (media_ids=[] sent to X).
+    • neither given, clear_media=False -> the existing media_ids are read
+      via get_drafts and RE-SENT with the edit, so the media survives a
+      text-only edit. (If the lookup fails, falls back to omitting
+      media_ids, in which case X will drop the media.)
+    • clear_media=True -> media explicitly removed (media_ids=[] sent).
+
+    NOTE: media_b64 is REQUIRED when the file lives on the client
+    machine — this server cannot read the client's filesystem.
 
     NOTE on remote clients: media_b64 is REQUIRED when the file lives on the
     client machine — this server cannot read the client's filesystem.
@@ -1093,6 +1092,22 @@ async def edit_draft(
         media_ids = [int(mid)]
     elif clear_media:
         media_ids = []
+    else:
+        # MEDYA KORUMA (2026-09-18 canli test ile kanitlandi): X, EditDraftTweet
+        # isteginde media_ids alani olmadiginda mevcut medyayi SILIYOR. Metin
+        # duzeltmesinde medyanin kalmasi icin once mevcut medyayi okuyup ayni
+        # id'lerle edit istegi gonderiyoruz.
+        try:
+            current = await writer.get_drafts()
+            drafts = current.get("drafts", []) if isinstance(current, dict) else []
+            for d in drafts:
+                if str(d.get("draft_id")) == str(draft_id):
+                    existing = d.get("media_ids") or []
+                    if existing:
+                        media_ids = [int(mid) for mid in existing]
+                    break
+        except Exception:
+            media_ids = None  # okunamazsa eski davranisa dus (medya dusebilir)
 
     result = await writer.edit_draft(draft_id, text, media_ids=media_ids)
     return json.dumps(result, indent=2)
