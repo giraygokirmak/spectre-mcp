@@ -9,8 +9,9 @@ import asyncio
 import json
 import logging
 import os
-from typing import Optional
+from typing import Annotated, Optional
 from fastmcp import FastMCP
+from pydantic import BeforeValidator, WithJsonSchema
 from loguru import logger
 
 # Silence twscrape's noisy INFO logs (migrations, account pool internals)
@@ -59,6 +60,38 @@ def _json(obj) -> str:
     if hasattr(obj, "model_dump"):
         return json.dumps(obj.model_dump(), indent=2, default=str)
     return json.dumps(obj, indent=2, default=str)
+
+
+def _id(value) -> Optional[int]:
+    """Coerce an X ID to an int, accepting a string.
+
+    X IDs are 64-bit (e.g. 2111332908657148356) and overflow the IEEE-754
+    safe-integer range (2**53), so clients that parse JSON as doubles silently
+    round them - the call then fails with a bogus "not found". Every ID
+    parameter is therefore declared as a string on the wire and converted here.
+    Accepts digits, a numeric string, or a full x.com URL. None passes through.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"Invalid X ID: {value!r}")
+    if isinstance(value, int):
+        return value
+    s = str(value).strip().rstrip("/")
+    if "/" in s:
+        s = s.rsplit("/", 1)[-1]
+    s = s.split("?")[0].split("#")[0]
+    if not s.isdigit():
+        raise ValueError(
+            f"Invalid X ID: {value!r} - pass the numeric ID as a string "
+            "(e.g. \"2111332908657148356\"), not a URL, handle or float."
+        )
+    return int(s)
+
+
+# ID params are exposed as strings (see _id); optional ones as string | null.
+XId = Annotated[int, BeforeValidator(_id), WithJsonSchema({"type": "string"})]
+OptXId = Optional[XId]
 
 
 # ══════════════════════════════════════════
@@ -290,11 +323,11 @@ async def get_following(username: str, limit: int = 20) -> str:
 # ══════════════════════════════════════════
 
 @mcp.tool()
-async def get_tweet(tweet_id: int) -> str:
+async def get_tweet(tweet_id: XId) -> str:
     """Get a single tweet by its ID.
 
     Args:
-        tweet_id: The numeric tweet ID.
+        tweet_id: The tweet ID as a string (X IDs overflow JSON numbers).
 
     Returns:
         Full tweet details including text, author, metrics, media, etc.
@@ -307,11 +340,11 @@ async def get_tweet(tweet_id: int) -> str:
 
 
 @mcp.tool()
-async def get_tweet_replies(tweet_id: int, limit: int = 20) -> str:
+async def get_tweet_replies(tweet_id: XId, limit: int = 20) -> str:
     """Get replies to a tweet.
 
     Args:
-        tweet_id: The numeric tweet ID.
+        tweet_id: The tweet ID as a string (X IDs overflow JSON numbers).
         limit: Max replies to return (default 20, max 100).
 
     Returns:
@@ -324,7 +357,7 @@ async def get_tweet_replies(tweet_id: int, limit: int = 20) -> str:
 
 
 @mcp.tool()
-async def get_thread(tweet_id: int, limit: int = 50) -> str:
+async def get_thread(tweet_id: XId, limit: int = 50) -> str:
     """Get the full conversation thread a tweet belongs to.
 
     Args:
@@ -340,11 +373,11 @@ async def get_thread(tweet_id: int, limit: int = 50) -> str:
 
 
 @mcp.tool()
-async def get_retweeters(tweet_id: int, limit: int = 20) -> str:
+async def get_retweeters(tweet_id: XId, limit: int = 20) -> str:
     """Get users who retweeted a tweet.
 
     Args:
-        tweet_id: The numeric tweet ID.
+        tweet_id: The tweet ID as a string (X IDs overflow JSON numbers).
         limit: Max users to return (default 20, max 100).
 
     Returns:
@@ -397,11 +430,11 @@ async def get_home_timeline(limit: int = 20) -> str:
 # ══════════════════════════════════════════
 
 @mcp.tool()
-async def get_list_timeline(list_id: int, limit: int = 20) -> str:
+async def get_list_timeline(list_id: XId, limit: int = 20) -> str:
     """Get tweets from an X/Twitter list.
 
     Args:
-        list_id: The numeric list ID.
+        list_id: The list ID as a string.
         limit: Max tweets to return (default 20, max 100).
 
     Returns:
@@ -414,11 +447,11 @@ async def get_list_timeline(list_id: int, limit: int = 20) -> str:
 
 
 @mcp.tool()
-async def get_list_members(list_id: int, limit: int = 20) -> str:
+async def get_list_members(list_id: XId, limit: int = 20) -> str:
     """Get members of an X/Twitter list.
 
     Args:
-        list_id: The numeric list ID.
+        list_id: The list ID as a string.
         limit: Max members to return (default 20, max 100).
 
     Returns:
@@ -435,11 +468,11 @@ async def get_list_members(list_id: int, limit: int = 20) -> str:
 # ══════════════════════════════════════════
 
 @mcp.tool()
-async def get_community_tweets(community_id: int, limit: int = 20) -> str:
+async def get_community_tweets(community_id: XId, limit: int = 20) -> str:
     """Get tweets from an X/Twitter community.
 
     Args:
-        community_id: The numeric community ID.
+        community_id: The community ID as a string.
         limit: Max tweets to return (default 20, max 100).
 
     Returns:
@@ -452,11 +485,11 @@ async def get_community_tweets(community_id: int, limit: int = 20) -> str:
 
 
 @mcp.tool()
-async def get_community_info(community_id: int) -> str:
+async def get_community_info(community_id: XId) -> str:
     """Get details about an X/Twitter community.
 
     Args:
-        community_id: The numeric community ID.
+        community_id: The community ID as a string.
 
     Returns:
         Community info: name, description, member count, etc.
@@ -493,13 +526,13 @@ async def get_bookmarks(limit: int = 20) -> str:
 # ══════════════════════════════════════════
 
 @mcp.tool()
-async def post_tweet(text: str, reply_to: int | None = None, quote_tweet: int | None = None, media_ids: str = "") -> str:
+async def post_tweet(text: str, reply_to: OptXId = None, quote_tweet: OptXId = None, media_ids: str = "") -> str:
     """Post a new tweet on X/Twitter.
 
     Args:
         text: Tweet content (max 280 chars for standard, 25k for Premium).
-        reply_to: Optional tweet ID to reply to.
-        quote_tweet: Optional tweet ID to quote.
+        reply_to: Optional tweet ID to reply to, as a string.
+        quote_tweet: Optional tweet ID to quote, as a string.
         media_ids: Comma-separated media IDs from upload_media (e.g. "123456,789012").
 
     Returns:
@@ -530,11 +563,11 @@ async def upload_media(file_path: str) -> str:
 
 
 @mcp.tool()
-async def delete_tweet(tweet_id: int) -> str:
+async def delete_tweet(tweet_id: XId) -> str:
     """Delete a tweet you posted.
 
     Args:
-        tweet_id: The numeric tweet ID to delete.
+        tweet_id: The tweet ID to delete, as a string (X IDs overflow JSON numbers).
 
     Returns:
         Confirmation JSON.
@@ -545,11 +578,11 @@ async def delete_tweet(tweet_id: int) -> str:
 
 
 @mcp.tool()
-async def like_tweet(tweet_id: int) -> str:
+async def like_tweet(tweet_id: XId) -> str:
     """Like a tweet.
 
     Args:
-        tweet_id: The numeric tweet ID to like.
+        tweet_id: The tweet ID to like, as a string (X IDs overflow JSON numbers).
 
     Returns:
         Confirmation JSON.
@@ -560,11 +593,11 @@ async def like_tweet(tweet_id: int) -> str:
 
 
 @mcp.tool()
-async def unlike_tweet(tweet_id: int) -> str:
+async def unlike_tweet(tweet_id: XId) -> str:
     """Unlike a tweet.
 
     Args:
-        tweet_id: The numeric tweet ID to unlike.
+        tweet_id: The tweet ID to unlike, as a string (X IDs overflow JSON numbers).
 
     Returns:
         Confirmation JSON.
@@ -575,11 +608,11 @@ async def unlike_tweet(tweet_id: int) -> str:
 
 
 @mcp.tool()
-async def retweet(tweet_id: int) -> str:
+async def retweet(tweet_id: XId) -> str:
     """Retweet a tweet.
 
     Args:
-        tweet_id: The numeric tweet ID to retweet.
+        tweet_id: The tweet ID to retweet, as a string (X IDs overflow JSON numbers).
 
     Returns:
         Confirmation JSON.
@@ -590,11 +623,11 @@ async def retweet(tweet_id: int) -> str:
 
 
 @mcp.tool()
-async def unretweet(tweet_id: int) -> str:
+async def unretweet(tweet_id: XId) -> str:
     """Undo a retweet.
 
     Args:
-        tweet_id: The numeric tweet ID to unretweet.
+        tweet_id: The tweet ID to unretweet, as a string (X IDs overflow JSON numbers).
 
     Returns:
         Confirmation JSON.
@@ -605,11 +638,11 @@ async def unretweet(tweet_id: int) -> str:
 
 
 @mcp.tool()
-async def bookmark_tweet(tweet_id: int) -> str:
+async def bookmark_tweet(tweet_id: XId) -> str:
     """Bookmark a tweet.
 
     Args:
-        tweet_id: The numeric tweet ID to bookmark.
+        tweet_id: The tweet ID to bookmark, as a string (X IDs overflow JSON numbers).
 
     Returns:
         Confirmation JSON.
@@ -620,11 +653,11 @@ async def bookmark_tweet(tweet_id: int) -> str:
 
 
 @mcp.tool()
-async def unbookmark_tweet(tweet_id: int) -> str:
+async def unbookmark_tweet(tweet_id: XId) -> str:
     """Remove a bookmark.
 
     Args:
-        tweet_id: The numeric tweet ID to unbookmark.
+        tweet_id: The tweet ID to unbookmark, as a string (X IDs overflow JSON numbers).
 
     Returns:
         Confirmation JSON.
@@ -635,11 +668,11 @@ async def unbookmark_tweet(tweet_id: int) -> str:
 
 
 @mcp.tool()
-async def follow_user(user_id: int) -> str:
+async def follow_user(user_id: XId) -> str:
     """Follow a user on X/Twitter.
 
     Args:
-        user_id: The numeric user ID to follow. Use get_user() first to get the ID.
+        user_id: The user ID to follow, as a string (X IDs overflow JSON numbers). Use get_user() first to get the ID.
 
     Returns:
         Confirmation JSON.
@@ -650,11 +683,11 @@ async def follow_user(user_id: int) -> str:
 
 
 @mcp.tool()
-async def unfollow_user(user_id: int) -> str:
+async def unfollow_user(user_id: XId) -> str:
     """Unfollow a user on X/Twitter.
 
     Args:
-        user_id: The numeric user ID to unfollow.
+        user_id: The user ID to unfollow, as a string (X IDs overflow JSON numbers).
 
     Returns:
         Confirmation JSON.
@@ -665,11 +698,11 @@ async def unfollow_user(user_id: int) -> str:
 
 
 @mcp.tool()
-async def mute_user(user_id: int) -> str:
+async def mute_user(user_id: XId) -> str:
     """Mute a user on X/Twitter.
 
     Args:
-        user_id: The numeric user ID to mute. Use get_user() first to get the ID.
+        user_id: The user ID to mute, as a string (X IDs overflow JSON numbers). Use get_user() first to get the ID.
 
     Returns:
         Confirmation JSON.
@@ -680,11 +713,11 @@ async def mute_user(user_id: int) -> str:
 
 
 @mcp.tool()
-async def unmute_user(user_id: int) -> str:
+async def unmute_user(user_id: XId) -> str:
     """Unmute a user on X/Twitter.
 
     Args:
-        user_id: The numeric user ID to unmute.
+        user_id: The user ID to unmute, as a string (X IDs overflow JSON numbers).
 
     Returns:
         Confirmation JSON.
@@ -695,11 +728,11 @@ async def unmute_user(user_id: int) -> str:
 
 
 @mcp.tool()
-async def block_user(user_id: int) -> str:
+async def block_user(user_id: XId) -> str:
     """Block a user on X/Twitter.
 
     Args:
-        user_id: The numeric user ID to block. Use get_user() first to get the ID.
+        user_id: The user ID to block, as a string (X IDs overflow JSON numbers). Use get_user() first to get the ID.
 
     Returns:
         Confirmation JSON.
@@ -710,11 +743,11 @@ async def block_user(user_id: int) -> str:
 
 
 @mcp.tool()
-async def unblock_user(user_id: int) -> str:
+async def unblock_user(user_id: XId) -> str:
     """Unblock a user on X/Twitter.
 
     Args:
-        user_id: The numeric user ID to unblock.
+        user_id: The user ID to unblock, as a string (X IDs overflow JSON numbers).
 
     Returns:
         Confirmation JSON.
@@ -725,11 +758,11 @@ async def unblock_user(user_id: int) -> str:
 
 
 @mcp.tool()
-async def send_dm(user_id: int, text: str) -> str:
+async def send_dm(user_id: XId, text: str) -> str:
     """Send a direct message to a user.
 
     Args:
-        user_id: The numeric user ID to message. Use get_user() first to get the ID.
+        user_id: The user ID to message, as a string (X IDs overflow JSON numbers). Use get_user() first to get the ID.
         text: Message content.
 
     Returns:
@@ -788,11 +821,11 @@ async def create_list(name: str, description: str = "") -> str:
 
 
 @mcp.tool()
-async def update_list(list_id: int, name: str, description: str = "") -> str:
+async def update_list(list_id: XId, name: str, description: str = "") -> str:
     """Update an X/Twitter list's name/description.
 
     Args:
-        list_id: The numeric list ID.
+        list_id: The list ID as a string.
         name: New list name.
         description: New description.
 
@@ -805,12 +838,12 @@ async def update_list(list_id: int, name: str, description: str = "") -> str:
 
 
 @mcp.tool()
-async def add_list_member(list_id: int, user_id: int) -> str:
+async def add_list_member(list_id: XId, user_id: XId) -> str:
     """Add a user to an X/Twitter list.
 
     Args:
-        list_id: The numeric list ID.
-        user_id: The numeric user ID to add.
+        list_id: The list ID as a string.
+        user_id: The user ID to add, as a string (X IDs overflow JSON numbers).
 
     Returns:
         Confirmation JSON.
@@ -821,12 +854,12 @@ async def add_list_member(list_id: int, user_id: int) -> str:
 
 
 @mcp.tool()
-async def remove_list_member(list_id: int, user_id: int) -> str:
+async def remove_list_member(list_id: XId, user_id: XId) -> str:
     """Remove a user from an X/Twitter list.
 
     Args:
-        list_id: The numeric list ID.
-        user_id: The numeric user ID to remove.
+        list_id: The list ID as a string.
+        user_id: The user ID to remove, as a string (X IDs overflow JSON numbers).
 
     Returns:
         Confirmation JSON.
@@ -837,11 +870,11 @@ async def remove_list_member(list_id: int, user_id: int) -> str:
 
 
 @mcp.tool()
-async def join_community(community_id: int) -> str:
+async def join_community(community_id: XId) -> str:
     """Join an X/Twitter community.
 
     Args:
-        community_id: The numeric community ID.
+        community_id: The community ID as a string.
 
     Returns:
         Confirmation JSON.
@@ -852,11 +885,11 @@ async def join_community(community_id: int) -> str:
 
 
 @mcp.tool()
-async def leave_community(community_id: int) -> str:
+async def leave_community(community_id: XId) -> str:
     """Leave an X/Twitter community.
 
     Args:
-        community_id: The numeric community ID.
+        community_id: The community ID as a string.
 
     Returns:
         Confirmation JSON.
@@ -871,13 +904,13 @@ async def leave_community(community_id: int) -> str:
 # ══════════════════════════════════════════
 
 @mcp.tool()
-async def schedule_tweet(text: str, execute_at: str, reply_to: int | None = None) -> str:
+async def schedule_tweet(text: str, execute_at: str, reply_to: OptXId = None) -> str:
     """Schedule a tweet for future posting.
 
     Args:
         text: Tweet content (max 280 chars).
         execute_at: ISO 8601 datetime (e.g. "2026-06-25T14:00:00Z").
-        reply_to: Optional tweet ID to reply to.
+        reply_to: Optional tweet ID to reply to, as a string.
 
     Returns:
         JSON with scheduling confirmation.
@@ -1039,7 +1072,7 @@ async def edit_bookmark_folder(folder_id: str, name: str) -> str:
 
 
 @mcp.tool()
-async def add_tweet_to_folder(folder_id: str, tweet_id: int) -> str:
+async def add_tweet_to_folder(folder_id: str, tweet_id: XId) -> str:
     """Add a bookmarked tweet to a folder.
 
     Args:
@@ -1055,7 +1088,7 @@ async def add_tweet_to_folder(folder_id: str, tweet_id: int) -> str:
 
 
 @mcp.tool()
-async def remove_tweet_from_folder(folder_id: str, tweet_id: int) -> str:
+async def remove_tweet_from_folder(folder_id: str, tweet_id: XId) -> str:
     """Remove a tweet from a bookmark folder.
 
     Args:
@@ -1075,11 +1108,11 @@ async def remove_tweet_from_folder(folder_id: str, tweet_id: int) -> str:
 # ══════════════════════════════════════════
 
 @mcp.tool()
-async def delete_list(list_id: int) -> str:
+async def delete_list(list_id: XId) -> str:
     """Delete an X/Twitter list.
 
     Args:
-        list_id: The numeric list ID.
+        list_id: The list ID as a string.
 
     Returns:
         Confirmation JSON.
@@ -1132,7 +1165,7 @@ async def unfollow_topic(topic_id: str) -> str:
 # Implementation preserved in writer.py for eligible accounts.
 
 @mcp.tool()
-async def get_community_notes(tweet_id: int) -> str:
+async def get_community_notes(tweet_id: XId) -> str:
     """Get community notes on a tweet.
 
     Args:
@@ -1309,11 +1342,11 @@ async def search_dm(query: str, limit: int = 20) -> str:
 
 
 @mcp.tool()
-async def dm_block_user(user_id: int) -> str:
+async def dm_block_user(user_id: XId) -> str:
     """Block a user from sending you DMs.
 
     Args:
-        user_id: The numeric user ID to block in DMs.
+        user_id: The user ID to block in DMs, as a string (X IDs overflow JSON numbers).
 
     Returns:
         Confirmation JSON.
@@ -1324,11 +1357,11 @@ async def dm_block_user(user_id: int) -> str:
 
 
 @mcp.tool()
-async def dm_unblock_user(user_id: int) -> str:
+async def dm_unblock_user(user_id: XId) -> str:
     """Unblock a user from DMs.
 
     Args:
-        user_id: The numeric user ID to unblock in DMs.
+        user_id: The user ID to unblock in DMs, as a string (X IDs overflow JSON numbers).
 
     Returns:
         Confirmation JSON.
@@ -1343,7 +1376,7 @@ async def dm_unblock_user(user_id: int) -> str:
 # ══════════════════════════════════════════
 
 @mcp.tool()
-async def pin_tweet(tweet_id: int) -> str:
+async def pin_tweet(tweet_id: XId) -> str:
     """⚠️ DESTRUCTIVE — Pin a tweet to your profile (replaces any existing pinned tweet).
 
     WARNING: If you already have a pinned tweet, it will be unpinned automatically.
@@ -1361,7 +1394,7 @@ async def pin_tweet(tweet_id: int) -> str:
 
 
 @mcp.tool()
-async def unpin_tweet(tweet_id: int) -> str:
+async def unpin_tweet(tweet_id: XId) -> str:
     """Unpin a tweet from your profile.
 
     Args:
@@ -1376,7 +1409,7 @@ async def unpin_tweet(tweet_id: int) -> str:
 
 
 @mcp.tool()
-async def remove_follower(user_id: int) -> str:
+async def remove_follower(user_id: XId) -> str:
     """⚠️ DESTRUCTIVE — Remove a follower from your account."""
     writer = _get_writer()
     result = await writer.remove_follower(user_id)
@@ -1384,7 +1417,7 @@ async def remove_follower(user_id: int) -> str:
 
 
 @mcp.tool()
-async def pin_reply(tweet_id: int) -> str:
+async def pin_reply(tweet_id: XId) -> str:
     """Pin a reply to a conversation."""
     writer = _get_writer()
     result = await writer.pin_reply(tweet_id)
@@ -1392,7 +1425,7 @@ async def pin_reply(tweet_id: int) -> str:
 
 
 @mcp.tool()
-async def unpin_reply(tweet_id: int) -> str:
+async def unpin_reply(tweet_id: XId) -> str:
     """Unpin a reply from a conversation."""
     writer = _get_writer()
     result = await writer.unpin_reply(tweet_id)
@@ -1400,7 +1433,7 @@ async def unpin_reply(tweet_id: int) -> str:
 
 
 @mcp.tool()
-async def get_followers_you_know(user_id: int, limit: int = 20) -> str:
+async def get_followers_you_know(user_id: XId, limit: int = 20) -> str:
     """Get mutual followers (followers you know)."""
     writer = _get_writer()
     result = await writer.get_followers_you_know(user_id, limit)
@@ -1443,11 +1476,11 @@ async def delete_highlight(highlight_id: str) -> str:
 
 
 @mcp.tool()
-async def get_user_highlights(user_id: int, limit: int = 20) -> str:
+async def get_user_highlights(user_id: XId, limit: int = 20) -> str:
     """Get a user's profile highlight tweets.
 
     Args:
-        user_id: The numeric user ID.
+        user_id: The user ID as a string (X IDs overflow JSON numbers).
         limit: Max tweets to return (default 20).
 
     Returns:
@@ -1463,11 +1496,11 @@ async def get_user_highlights(user_id: int, limit: int = 20) -> str:
 # ══════════════════════════════════════════
 
 @mcp.tool()
-async def get_verified_followers(user_id: int, limit: int = 20) -> str:
+async def get_verified_followers(user_id: XId, limit: int = 20) -> str:
     """Get Blue-verified followers of a user.
 
     Args:
-        user_id: The numeric user ID.
+        user_id: The user ID as a string (X IDs overflow JSON numbers).
         limit: Max followers to return (default 20).
 
     Returns:
@@ -1479,11 +1512,11 @@ async def get_verified_followers(user_id: int, limit: int = 20) -> str:
 
 
 @mcp.tool()
-async def get_user_likes(user_id: int, limit: int = 20) -> str:
+async def get_user_likes(user_id: XId, limit: int = 20) -> str:
     """Get a user's liked tweets.
 
     Args:
-        user_id: The numeric user ID.
+        user_id: The user ID as a string (X IDs overflow JSON numbers).
         limit: Max tweets to return (default 20, max 100).
 
     Returns:
@@ -1540,7 +1573,7 @@ async def search_dm_people(query: str, limit: int = 20) -> str:
 
 
 @mcp.tool()
-async def get_favoriters(tweet_id: int, limit: int = 20) -> str:
+async def get_favoriters(tweet_id: XId, limit: int = 20) -> str:
     """Get users who liked a tweet."""
     writer = _get_writer()
     result = await writer.get_favoriters(tweet_id, limit)
@@ -1548,7 +1581,7 @@ async def get_favoriters(tweet_id: int, limit: int = 20) -> str:
 
 
 @mcp.tool()
-async def get_tweet_edit_history(tweet_id: int) -> str:
+async def get_tweet_edit_history(tweet_id: XId) -> str:
     """Get edit history of a tweet."""
     writer = _get_writer()
     result = await writer.get_tweet_edit_history(tweet_id)
@@ -1556,7 +1589,7 @@ async def get_tweet_edit_history(tweet_id: int) -> str:
 
 
 @mcp.tool()
-async def get_similar_posts(tweet_id: int, limit: int = 20) -> str:
+async def get_similar_posts(tweet_id: XId, limit: int = 20) -> str:
     """Get similar/related posts to a tweet."""
     writer = _get_writer()
     result = await writer.get_similar_posts(tweet_id, limit)
@@ -1580,7 +1613,7 @@ async def search_bookmarks(query: str, limit: int = 20) -> str:
 
 
 @mcp.tool()
-async def subscribe_list(list_id: int) -> str:
+async def subscribe_list(list_id: XId) -> str:
     """Subscribe to a list."""
     writer = _get_writer()
     result = await writer.subscribe_list(list_id)
@@ -1588,7 +1621,7 @@ async def subscribe_list(list_id: int) -> str:
 
 
 @mcp.tool()
-async def unsubscribe_list(list_id: int) -> str:
+async def unsubscribe_list(list_id: XId) -> str:
     """Unsubscribe from a list."""
     writer = _get_writer()
     result = await writer.unsubscribe_list(list_id)
@@ -1596,7 +1629,7 @@ async def unsubscribe_list(list_id: int) -> str:
 
 
 @mcp.tool()
-async def get_list_memberships(user_id: int, limit: int = 20) -> str:
+async def get_list_memberships(user_id: XId, limit: int = 20) -> str:
     """Get lists a user is a member of."""
     writer = _get_writer()
     result = await writer.get_list_memberships(user_id, limit)
@@ -1604,7 +1637,7 @@ async def get_list_memberships(user_id: int, limit: int = 20) -> str:
 
 
 @mcp.tool()
-async def get_list_ownerships(user_id: int, limit: int = 20) -> str:
+async def get_list_ownerships(user_id: XId, limit: int = 20) -> str:
     """Get lists owned by a user."""
     writer = _get_writer()
     result = await writer.get_list_ownerships(user_id, limit)
@@ -1612,7 +1645,7 @@ async def get_list_ownerships(user_id: int, limit: int = 20) -> str:
 
 
 @mcp.tool()
-async def get_list_subscribers(list_id: int, limit: int = 20) -> str:
+async def get_list_subscribers(list_id: XId, limit: int = 20) -> str:
     """Get subscribers of a list."""
     writer = _get_writer()
     result = await writer.get_list_subscribers(list_id, limit)

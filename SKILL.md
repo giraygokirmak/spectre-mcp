@@ -51,6 +51,8 @@ spectre add myaccount "auth_token=xxx; ct0=yyy"
 
 Cookies from: Browser DevTools → Storage → Cookies → x.com (need both `auth_token` and `ct0`).
 
+**IDs are strings.** Every ID parameter (`tweet_id`, `user_id`, `list_id`, `community_id`, `reply_to`, `quote_tweet`) takes a quoted string — `get_tweet("2111332908657148356")`. X IDs are 64-bit and overflow JSON numbers (2^53), so clients that parse JSON as doubles silently round them and the call returns a false "not found". A full `https://x.com/...` URL works too, and plain integers are still accepted.
+
 ## How To Use Each Category
 
 ### Searching X
