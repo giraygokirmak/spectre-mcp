@@ -39,6 +39,18 @@ spectre help                         Show help
 | `TWS_TELEMETRY` | `0` | Disable telemetry |
 | `SPECTRE_OP_*` | built-in | Override GraphQL operation IDs (when they rotate) |
 
+## IDs Are Strings
+
+Every ID parameter (`tweet_id`, `user_id`, `list_id`, `community_id`, `reply_to`, `quote_tweet`) is typed as a **string** in the tool schema:
+
+```python
+get_tweet("2111332908657148356")
+```
+
+X IDs are 64-bit integers (~2.1e18 for modern tweets), well past JSON's 2^53 safe-integer limit. Clients and model APIs that parse JSON numbers as IEEE-754 doubles round them silently: `2111332908657148356` becomes `2111332908657148416`, and the tool dutifully reports a perfectly good tweet as "not found or deleted". A string never round-trips through a float, so the exact ID reaches X.
+
+Accepted forms: a numeric string (`"2111332908657148356"`), a full URL (`https://x.com/user/status/2111332908657148356`), or a plain integer (backwards compatibility). Anything else fails loudly with a validation error rather than querying the wrong tweet.
+
 ## Limitations
 
 - **Authenticated accounts required** — X blocks unauthenticated access
